@@ -76,7 +76,7 @@ public class KafkaTransport extends ThrottleableTransport {
     public static final String CK_FETCH_MIN_BYTES = "fetch_min_bytes";
     public static final String CK_FETCH_WAIT_MAX = "fetch_wait_max";
     public static final String CK_ZOOKEEPER = "zookeeper";
-    public static final String CK_VERSION = "0.8.2";
+    public static final String CK_VERSION = "kafka_version";
     public static final String CK_TOPIC_FILTER = "topic_filter";
     public static final String CK_THREADS = "threads";
     public static final String CK_OFFSET_RESET = "offset_reset";
@@ -108,6 +108,7 @@ public class KafkaTransport extends ThrottleableTransport {
 
     private CountDownLatch stopLatch;
     private ConsumerConnector cc;
+    private cn.fraudmetrix.kafkaShadeClients082.kafka.javaapi.consumer.ConsumerConnector cc082;
 
     @AssistedInject
     public KafkaTransport(@Assisted Configuration configuration,
@@ -200,86 +201,169 @@ public class KafkaTransport extends ThrottleableTransport {
         props.put("consumer.timeout.ms", "1000");
 
         final int numThreads = configuration.getInt(CK_THREADS);
-        final ConsumerConfig consumerConfig = new ConsumerConfig(props);
-        cc = Consumer.createJavaConsumerConnector(consumerConfig);
+        String kafkaVersion = configuration.getString(CK_VERSION);
 
-        final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
+        if (kafkaVersion.startsWith("0.8")) {
+            final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerConfig consumerConfig082 = new cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerConfig(props);
+            cc082 = cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.Consumer.createJavaConsumerConnector(consumerConfig082);
+            final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.TopicFilter filter = new cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.Whitelist(configuration.getString(CK_TOPIC_FILTER));
+            final List<cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.KafkaStream<byte[], byte[]>> streams = cc082.createMessageStreamsByFilter(filter, numThreads);
 
-        final List<KafkaStream<byte[], byte[]>> streams = cc.createMessageStreamsByFilter(filter, numThreads);
-        final ExecutorService executor = executorService(numThreads);
+            final ExecutorService executor = executorService(numThreads);
 
-        // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
-        // and then shutting down the connection.
-        // this is to avoid yanking away the connection from the consumer runnables
-        stopLatch = new CountDownLatch(streams.size());
+            // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
+            // and then shutting down the connection.
+            // this is to avoid yanking away the connection from the consumer runnables
+            stopLatch = new CountDownLatch(streams.size());
 
-        for (final KafkaStream<byte[], byte[]> stream : streams) {
-            executor.submit(new Runnable() {
+            for (final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.KafkaStream<byte[], byte[]> stream : streams) {
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
+                        boolean retry;
+
+                        do {
+                            retry = false;
+
+                            try {
+                                // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
+                                // noinspection WhileLoopReplaceableByForEach
+                                while (consumerIterator.hasNext()) {
+                                    if (paused) {
+                                        // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                        LOG.debug(
+                                            "Message processing is paused, blocking until message processing is turned back on.");
+                                        Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                                    }
+                                    // check for being stopped before actually getting the message, otherwise we could end up losing that message
+                                    if (stopped) {
+                                        break;
+                                    }
+                                    if (isThrottled()) {
+                                        blockUntilUnthrottled();
+                                    }
+
+                                    // process the message, this will immediately mark the message as having been processed. this gets tricky
+                                    // if we get an exception about processing it down below.
+                                    final cn.fraudmetrix.kafkaShadeClients082.kafka.message.MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
+
+                                    final byte[] bytes = message.message();
+
+                                    // it is possible that the message is null
+                                    if (bytes == null) {
+                                        continue;
+                                    }
+
+                                    totalBytesRead.addAndGet(bytes.length);
+                                    lastSecBytesReadTmp.addAndGet(bytes.length);
+
+                                    final RawMessage rawMessage = new RawMessage(bytes);
+
+                                    // TODO implement throttling
+                                    input.processRawMessage(rawMessage);
+                                }
+                            } catch (cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerTimeoutException e) {
+                                // Happens when there is nothing to consume, retry to check again.
+                                retry = true;
+                            } catch (Exception e) {
+                                LOG.error("Kafka consumer error, stopping consumer thread.", e);
+                            }
+                        } while (retry && !stopped);
+                        // explicitly commit our offsets when stopping.
+                        // this might trigger a couple of times, but it won't hurt
+                        cc082.commitOffsets();
+                        stopLatch.countDown();
+                    }
+                });
+            }
+            scheduler.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
-                    final ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
-                    boolean retry;
-
-                    do {
-                        retry = false;
-
-                        try {
-                            // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
-                            // noinspection WhileLoopReplaceableByForEach
-                            while (consumerIterator.hasNext()) {
-                                if (paused) {
-                                    // we try not to spin here, so we wait until the lifecycle goes back to running.
-                                    LOG.debug(
-                                            "Message processing is paused, blocking until message processing is turned back on.");
-                                    Uninterruptibles.awaitUninterruptibly(pausedLatch);
-                                }
-                                // check for being stopped before actually getting the message, otherwise we could end up losing that message
-                                if (stopped) {
-                                    break;
-                                }
-                                if (isThrottled()) {
-                                    blockUntilUnthrottled();
-                                }
-
-                                // process the message, this will immediately mark the message as having been processed. this gets tricky
-                                // if we get an exception about processing it down below.
-                                final MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
-
-                                final byte[] bytes = message.message();
-
-                                // it is possible that the message is null
-                                if (bytes == null) {
-                                    continue;
-                                }
-
-                                totalBytesRead.addAndGet(bytes.length);
-                                lastSecBytesReadTmp.addAndGet(bytes.length);
-
-                                final RawMessage rawMessage = new RawMessage(bytes);
-
-                                // TODO implement throttling
-                                input.processRawMessage(rawMessage);
-                            }
-                        } catch (ConsumerTimeoutException e) {
-                            // Happens when there is nothing to consume, retry to check again.
-                            retry = true;
-                        } catch (Exception e) {
-                            LOG.error("Kafka consumer error, stopping consumer thread.", e);
-                        }
-                    } while (retry && !stopped);
-                    // explicitly commit our offsets when stopping.
-                    // this might trigger a couple of times, but it won't hurt
-                    cc.commitOffsets();
-                    stopLatch.countDown();
+                    lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
                 }
-            });
-        }
-        scheduler.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
+            }, 1, 1, TimeUnit.SECONDS);
+        } else {
+            final ConsumerConfig consumerConfig = new ConsumerConfig(props);
+            cc = Consumer.createJavaConsumerConnector(consumerConfig);
+            final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
+            final List<KafkaStream<byte[], byte[]>> streams = cc.createMessageStreamsByFilter(filter, numThreads);
+
+            final ExecutorService executor = executorService(numThreads);
+
+            // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
+            // and then shutting down the connection.
+            // this is to avoid yanking away the connection from the consumer runnables
+            stopLatch = new CountDownLatch(streams.size());
+
+            for (final KafkaStream<byte[], byte[]> stream : streams) {
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        final ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
+                        boolean retry;
+
+                        do {
+                            retry = false;
+
+                            try {
+                                // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
+                                // noinspection WhileLoopReplaceableByForEach
+                                while (consumerIterator.hasNext()) {
+                                    if (paused) {
+                                        // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                        LOG.debug(
+                                            "Message processing is paused, blocking until message processing is turned back on.");
+                                        Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                                    }
+                                    // check for being stopped before actually getting the message, otherwise we could end up losing that message
+                                    if (stopped) {
+                                        break;
+                                    }
+                                    if (isThrottled()) {
+                                        blockUntilUnthrottled();
+                                    }
+
+                                    // process the message, this will immediately mark the message as having been processed. this gets tricky
+                                    // if we get an exception about processing it down below.
+                                    final MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
+
+                                    final byte[] bytes = message.message();
+
+                                    // it is possible that the message is null
+                                    if (bytes == null) {
+                                        continue;
+                                    }
+
+                                    totalBytesRead.addAndGet(bytes.length);
+                                    lastSecBytesReadTmp.addAndGet(bytes.length);
+
+                                    final RawMessage rawMessage = new RawMessage(bytes);
+
+                                    // TODO implement throttling
+                                    input.processRawMessage(rawMessage);
+                                }
+                            } catch (ConsumerTimeoutException e) {
+                                // Happens when there is nothing to consume, retry to check again.
+                                retry = true;
+                            } catch (Exception e) {
+                                LOG.error("Kafka consumer error, stopping consumer thread.", e);
+                            }
+                        } while (retry && !stopped);
+                        // explicitly commit our offsets when stopping.
+                        // this might trigger a couple of times, but it won't hurt
+                        cc.commitOffsets();
+                        stopLatch.countDown();
+                    }
+                });
             }
-        }, 1, 1, TimeUnit.SECONDS);
+            scheduler.scheduleAtFixedRate(new Runnable() {
+                @Override
+                public void run() {
+                    lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
+                }
+            }, 1, 1, TimeUnit.SECONDS);
+        }
     }
 
     private ExecutorService executorService(int numThreads) {

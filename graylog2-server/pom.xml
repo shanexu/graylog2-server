@@ -434,6 +434,10 @@
             <artifactId>kafka_2.11</artifactId>
         </dependency>
         <dependency>
+            <groupId>cn.fraudmetrix</groupId>
+            <artifactId>kafka-shade-clients-0.8.2.2-fix2</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.graylog2</groupId>
             <artifactId>syslog4j</artifactId>
         </dependency>

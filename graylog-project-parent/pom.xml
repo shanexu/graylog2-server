@@ -289,6 +289,11 @@
                     </exclusion>
                 </exclusions>
             </dependency>
+            <dependency>
+                <groupId>cn.fraudmetrix</groupId>
+                <artifactId>kafka-shade-clients-0.8.2.2-fix2</artifactId>
+                <version>1.0-SNAPSHOT</version>
+            </dependency>
 
             <dependency>
                 <groupId>org.apache.zookeeper</groupId>
