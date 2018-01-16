@@ -203,7 +203,7 @@ public class KafkaTransport extends ThrottleableTransport {
         final int numThreads = configuration.getInt(CK_THREADS);
         String kafkaVersion = configuration.getString(CK_VERSION);
 
-        if (kafkaVersion.startsWith("0.8")) {
+        if (kafkaVersion == null || kafkaVersion.startsWith("0.8")) {
             final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerConfig consumerConfig082 = new cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.ConsumerConfig(props);
             cc082 = cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.Consumer.createJavaConsumerConnector(consumerConfig082);
             final cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.TopicFilter filter = new cn.fraudmetrix.kafkaShadeClients082.kafka.consumer.Whitelist(configuration.getString(CK_TOPIC_FILTER));
