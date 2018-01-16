@@ -76,6 +76,7 @@ public class KafkaTransport extends ThrottleableTransport {
     public static final String CK_FETCH_MIN_BYTES = "fetch_min_bytes";
     public static final String CK_FETCH_WAIT_MAX = "fetch_wait_max";
     public static final String CK_ZOOKEEPER = "zookeeper";
+    public static final String CK_VERSION = "0.8.2";
     public static final String CK_TOPIC_FILTER = "topic_filter";
     public static final String CK_THREADS = "threads";
     public static final String CK_OFFSET_RESET = "offset_reset";
@@ -345,6 +346,13 @@ public class KafkaTransport extends ThrottleableTransport {
                     "127.0.0.1:2181",
                     "Host and port of the ZooKeeper that is managing your Kafka cluster.",
                     ConfigurationField.Optional.NOT_OPTIONAL));
+
+            cr.addField(new TextField(
+                CK_VERSION,
+                "Kafak version",
+                "0.8.2",
+                "Kafka version",
+                ConfigurationField.Optional.OPTIONAL));
 
             cr.addField(new TextField(
                     CK_TOPIC_FILTER,
