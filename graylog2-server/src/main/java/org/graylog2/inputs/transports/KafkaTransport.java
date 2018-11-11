@@ -108,6 +108,7 @@ public class KafkaTransport extends ThrottleableTransport {
 
     private CountDownLatch stopLatch;
     private ConsumerConnector cc;
+    private kafka0_8_2_2.javaapi.consumer.ConsumerConnector cc0_8_2_2;
 
     @AssistedInject
     public KafkaTransport(@Assisted Configuration configuration,
@@ -200,86 +201,170 @@ public class KafkaTransport extends ThrottleableTransport {
         props.put("consumer.timeout.ms", "1000");
 
         final int numThreads = configuration.getInt(CK_THREADS);
-        final ConsumerConfig consumerConfig = new ConsumerConfig(props);
-        cc = Consumer.createJavaConsumerConnector(consumerConfig);
+        String kafkaVersion = configuration.getString(CK_VERSION);
 
-        final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
+        if (kafkaVersion == null || kafkaVersion.startsWith("0.8")) {
+            final kafka0_8_2_2.consumer.ConsumerConfig consumerConfig0_8_2_2 = new kafka0_8_2_2.consumer.ConsumerConfig(props);
+            cc0_8_2_2 = kafka0_8_2_2.consumer.Consumer.createJavaConsumerConnector(consumerConfig0_8_2_2);
+            final kafka0_8_2_2.consumer.TopicFilter filter = new kafka0_8_2_2.consumer.Whitelist(configuration.getString(CK_TOPIC_FILTER));
+            final List<kafka0_8_2_2.consumer.KafkaStream<byte[], byte[]>> streams = cc0_8_2_2.createMessageStreamsByFilter(filter, numThreads);
 
-        final List<KafkaStream<byte[], byte[]>> streams = cc.createMessageStreamsByFilter(filter, numThreads);
-        final ExecutorService executor = executorService(numThreads);
+            final ExecutorService executor = executorService(numThreads);
 
-        // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
-        // and then shutting down the connection.
-        // this is to avoid yanking away the connection from the consumer runnables
-        stopLatch = new CountDownLatch(streams.size());
+            // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
+            // and then shutting down the connection.
+            // this is to avoid yanking away the connection from the consumer runnables
+            stopLatch = new CountDownLatch(streams.size());
 
-        for (final KafkaStream<byte[], byte[]> stream : streams) {
-            executor.submit(new Runnable() {
+            for (final kafka0_8_2_2.consumer.KafkaStream<byte[], byte[]> stream : streams) {
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        final kafka0_8_2_2.consumer.ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
+                        boolean retry;
+
+                        do {
+                            retry = false;
+
+                            try {
+                                // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
+                                // noinspection WhileLoopReplaceableByForEach
+                                while (consumerIterator.hasNext()) {
+                                    if (paused) {
+                                        // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                        LOG.debug(
+                                            "Message processing is paused, blocking until message processing is turned back on.");
+                                        Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                                    }
+                                    // check for being stopped before actually getting the message, otherwise we could end up losing that message
+                                    if (stopped) {
+                                        break;
+                                    }
+                                    if (isThrottled()) {
+                                        blockUntilUnthrottled();
+                                    }
+
+                                    // process the message, this will immediately mark the message as having been processed. this gets tricky
+                                    // if we get an exception about processing it down below.
+                                    final kafka0_8_2_2.message.MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
+
+                                    final byte[] bytes = message.message();
+
+                                    // it is possible that the message is null
+                                    if (bytes == null) {
+                                        continue;
+                                    }
+
+                                    totalBytesRead.addAndGet(bytes.length);
+                                    lastSecBytesReadTmp.addAndGet(bytes.length);
+
+                                    final RawMessage rawMessage = new RawMessage(bytes);
+
+                                    // TODO implement throttling
+                                    input.processRawMessage(rawMessage);
+                                }
+                            } catch (kafka0_8_2_2.consumer.ConsumerTimeoutException e) {
+                                // Happens when there is nothing to consume, retry to check again.
+                                retry = true;
+                            } catch (Exception e) {
+                                LOG.error("Kafka consumer error, stopping consumer thread.", e);
+                            }
+                        } while (retry && !stopped);
+                        // explicitly commit our offsets when stopping.
+                        // this might trigger a couple of times, but it won't hurt
+                        cc0_8_2_2.commitOffsets();
+                        stopLatch.countDown();
+                    }
+                });
+            }
+            scheduler.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
-                    final ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
-                    boolean retry;
-
-                    do {
-                        retry = false;
-
-                        try {
-                            // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
-                            // noinspection WhileLoopReplaceableByForEach
-                            while (consumerIterator.hasNext()) {
-                                if (paused) {
-                                    // we try not to spin here, so we wait until the lifecycle goes back to running.
-                                    LOG.debug(
-                                            "Message processing is paused, blocking until message processing is turned back on.");
-                                    Uninterruptibles.awaitUninterruptibly(pausedLatch);
-                                }
-                                // check for being stopped before actually getting the message, otherwise we could end up losing that message
-                                if (stopped) {
-                                    break;
-                                }
-                                if (isThrottled()) {
-                                    blockUntilUnthrottled();
-                                }
-
-                                // process the message, this will immediately mark the message as having been processed. this gets tricky
-                                // if we get an exception about processing it down below.
-                                final MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
-
-                                final byte[] bytes = message.message();
-
-                                // it is possible that the message is null
-                                if (bytes == null) {
-                                    continue;
-                                }
-
-                                totalBytesRead.addAndGet(bytes.length);
-                                lastSecBytesReadTmp.addAndGet(bytes.length);
-
-                                final RawMessage rawMessage = new RawMessage(bytes);
-
-                                // TODO implement throttling
-                                input.processRawMessage(rawMessage);
-                            }
-                        } catch (ConsumerTimeoutException e) {
-                            // Happens when there is nothing to consume, retry to check again.
-                            retry = true;
-                        } catch (Exception e) {
-                            LOG.error("Kafka consumer error, stopping consumer thread.", e);
-                        }
-                    } while (retry && !stopped);
-                    // explicitly commit our offsets when stopping.
-                    // this might trigger a couple of times, but it won't hurt
-                    cc.commitOffsets();
-                    stopLatch.countDown();
+                    lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
                 }
-            });
-        }
-        scheduler.scheduleAtFixedRate(new Runnable() {
-            @Override
-            public void run() {
-                lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
+            }, 1, 1, TimeUnit.SECONDS);
+        } else {
+            final ConsumerConfig consumerConfig = new ConsumerConfig(props);
+            cc = Consumer.createJavaConsumerConnector(consumerConfig);
+
+            final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
+
+            final List<KafkaStream<byte[], byte[]>> streams = cc.createMessageStreamsByFilter(filter, numThreads);
+            final ExecutorService executor = executorService(numThreads);
+
+            // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
+            // and then shutting down the connection.
+            // this is to avoid yanking away the connection from the consumer runnables
+            stopLatch = new CountDownLatch(streams.size());
+
+            for (final KafkaStream<byte[], byte[]> stream : streams) {
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        final ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
+                        boolean retry;
+
+                        do {
+                            retry = false;
+
+                            try {
+                                // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
+                                // noinspection WhileLoopReplaceableByForEach
+                                while (consumerIterator.hasNext()) {
+                                    if (paused) {
+                                        // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                        LOG.debug(
+                                            "Message processing is paused, blocking until message processing is turned back on.");
+                                        Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                                    }
+                                    // check for being stopped before actually getting the message, otherwise we could end up losing that message
+                                    if (stopped) {
+                                        break;
+                                    }
+                                    if (isThrottled()) {
+                                        blockUntilUnthrottled();
+                                    }
+
+                                    // process the message, this will immediately mark the message as having been processed. this gets tricky
+                                    // if we get an exception about processing it down below.
+                                    final MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
+
+                                    final byte[] bytes = message.message();
+
+                                    // it is possible that the message is null
+                                    if (bytes == null) {
+                                        continue;
+                                    }
+
+                                    totalBytesRead.addAndGet(bytes.length);
+                                    lastSecBytesReadTmp.addAndGet(bytes.length);
+
+                                    final RawMessage rawMessage = new RawMessage(bytes);
+
+                                    // TODO implement throttling
+                                    input.processRawMessage(rawMessage);
+                                }
+                            } catch (ConsumerTimeoutException e) {
+                                // Happens when there is nothing to consume, retry to check again.
+                                retry = true;
+                            } catch (Exception e) {
+                                LOG.error("Kafka consumer error, stopping consumer thread.", e);
+                            }
+                        } while (retry && !stopped);
+                        // explicitly commit our offsets when stopping.
+                        // this might trigger a couple of times, but it won't hurt
+                        cc.commitOffsets();
+                        stopLatch.countDown();
+                    }
+                });
             }
-        }, 1, 1, TimeUnit.SECONDS);
+            scheduler.scheduleAtFixedRate(new Runnable() {
+                @Override
+                public void run() {
+                    lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
+                }
+            }, 1, 1, TimeUnit.SECONDS);
+        }
     }
 
     private ExecutorService executorService(int numThreads) {
