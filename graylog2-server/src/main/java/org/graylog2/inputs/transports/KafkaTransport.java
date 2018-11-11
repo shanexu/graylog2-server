@@ -314,7 +314,7 @@ public class KafkaTransport extends ThrottleableTransport {
                                 Uninterruptibles.awaitUninterruptibly(pausedLatch);
                             }
                             try {
-                                ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(Duration.ofMillis(100));
+                                ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(Duration.ofMillis(1000));
                                 for (ConsumerRecord<byte[], byte[]> message : consumerRecords) {
                                     if (paused) {
                                         // we try not to spin here, so we wait until the lifecycle goes back to running.
