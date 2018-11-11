@@ -27,15 +27,15 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.inject.assistedinject.Assisted;
 import com.google.inject.assistedinject.AssistedInject;
-import kafka.consumer.Consumer;
-import kafka.consumer.ConsumerConfig;
-import kafka.consumer.ConsumerIterator;
-import kafka.consumer.ConsumerTimeoutException;
-import kafka.consumer.KafkaStream;
-import kafka.consumer.TopicFilter;
-import kafka.consumer.Whitelist;
-import kafka.javaapi.consumer.ConsumerConnector;
-import kafka.message.MessageAndMetadata;
+import kafka0_9_0_1.consumer.Consumer;
+import kafka0_9_0_1.consumer.ConsumerConfig;
+import kafka0_9_0_1.consumer.ConsumerIterator;
+import kafka0_9_0_1.consumer.ConsumerTimeoutException;
+import kafka0_9_0_1.consumer.KafkaStream;
+import kafka0_9_0_1.consumer.TopicFilter;
+import kafka0_9_0_1.consumer.Whitelist;
+import kafka0_9_0_1.javaapi.consumer.ConsumerConnector;
+import kafka0_9_0_1.message.MessageAndMetadata;
 import org.graylog2.plugin.LocalMetricRegistry;
 import org.graylog2.plugin.ServerStatus;
 import org.graylog2.plugin.configuration.Configuration;
@@ -194,6 +194,10 @@ public class KafkaTransport extends ThrottleableTransport {
         props.put("fetch.min.bytes", String.valueOf(configuration.getInt(CK_FETCH_MIN_BYTES)));
         props.put("fetch.wait.max.ms", String.valueOf(configuration.getInt(CK_FETCH_WAIT_MAX)));
         props.put("zookeeper.connect", configuration.getString(CK_ZOOKEEPER));
+        String bootstrapServers = configuration.getString(CK_BOOTSTRAP);
+        if (bootstrapServers != null && bootstrapServers.length() != 0) {
+            props.put("bootstrap.servers", bootstrapServers);
+        }
         props.put("auto.offset.reset", configuration.getString(CK_OFFSET_RESET, DEFAULT_OFFSET_RESET));
         // Default auto commit interval is 60 seconds. Reduce to 1 second to minimize message duplication
         // if something breaks.
@@ -290,7 +294,7 @@ public class KafkaTransport extends ThrottleableTransport {
                     lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
                 }
             }, 1, 1, TimeUnit.SECONDS);
-        } else {
+        } else if (bootstrapServers == null || bootstrapServers.length() == 0) {
             final ConsumerConfig consumerConfig = new ConsumerConfig(props);
             cc = Consumer.createJavaConsumerConnector(consumerConfig);
             final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
@@ -445,7 +449,7 @@ public class KafkaTransport extends ThrottleableTransport {
             cr.addField(new TextField(
                 CK_BOOTSTRAP,
                 "Bootstrap servers",
-                "127.0.0.1:9092",
+                null,
                 "Bootstrap servers",
                 ConfigurationField.Optional.OPTIONAL));
 
