@@ -27,15 +27,6 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.inject.assistedinject.Assisted;
 import com.google.inject.assistedinject.AssistedInject;
-import kafka.consumer.Consumer;
-import kafka.consumer.ConsumerConfig;
-import kafka.consumer.ConsumerIterator;
-import kafka.consumer.ConsumerTimeoutException;
-import kafka.consumer.KafkaStream;
-import kafka.consumer.TopicFilter;
-import kafka.consumer.Whitelist;
-import kafka.javaapi.consumer.ConsumerConnector;
-import kafka.message.MessageAndMetadata;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -114,7 +105,6 @@ public class KafkaTransport extends ThrottleableTransport {
     private volatile CountDownLatch pausedLatch = new CountDownLatch(1);
 
     private CountDownLatch stopLatch;
-    private ConsumerConnector cc;
     private kafka0_8_2_2.javaapi.consumer.ConsumerConnector cc0_8_2_2;
 
     @AssistedInject
@@ -379,9 +369,9 @@ public class KafkaTransport extends ThrottleableTransport {
                 LOG.debug("Interrupted while waiting to stop input.");
             }
         }
-        if (cc != null) {
-            cc.shutdown();
-            cc = null;
+        if (cc0_8_2_2 != null) {
+            cc0_8_2_2.shutdown();
+            cc0_8_2_2 = null;
         }
     }
 
