@@ -27,9 +27,15 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.google.inject.assistedinject.Assisted;
 import com.google.inject.assistedinject.AssistedInject;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
+import kafka.consumer.Consumer;
+import kafka.consumer.ConsumerConfig;
+import kafka.consumer.ConsumerIterator;
+import kafka.consumer.ConsumerTimeoutException;
+import kafka.consumer.KafkaStream;
+import kafka.consumer.TopicFilter;
+import kafka.consumer.Whitelist;
+import kafka.javaapi.consumer.ConsumerConnector;
+import kafka.message.MessageAndMetadata;
 import org.graylog2.plugin.LocalMetricRegistry;
 import org.graylog2.plugin.ServerStatus;
 import org.graylog2.plugin.configuration.Configuration;
@@ -52,10 +58,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Named;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -64,7 +68,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Pattern;
 
 import static com.codahale.metrics.MetricRegistry.name;
 
@@ -105,6 +108,7 @@ public class KafkaTransport extends ThrottleableTransport {
     private volatile CountDownLatch pausedLatch = new CountDownLatch(1);
 
     private CountDownLatch stopLatch;
+    private ConsumerConnector cc;
     private kafka0_8_2_2.javaapi.consumer.ConsumerConnector cc0_8_2_2;
 
     @AssistedInject
@@ -190,7 +194,6 @@ public class KafkaTransport extends ThrottleableTransport {
         props.put("fetch.min.bytes", String.valueOf(configuration.getInt(CK_FETCH_MIN_BYTES)));
         props.put("fetch.wait.max.ms", String.valueOf(configuration.getInt(CK_FETCH_WAIT_MAX)));
         props.put("zookeeper.connect", configuration.getString(CK_ZOOKEEPER));
-        props.put("bootstrap.servers", configuration.getString(CK_BOOTSTRAP));
         props.put("auto.offset.reset", configuration.getString(CK_OFFSET_RESET, DEFAULT_OFFSET_RESET));
         // Default auto commit interval is 60 seconds. Reduce to 1 second to minimize message duplication
         // if something breaks.
@@ -288,34 +291,57 @@ public class KafkaTransport extends ThrottleableTransport {
                 }
             }, 1, 1, TimeUnit.SECONDS);
         } else {
+            final ConsumerConfig consumerConfig = new ConsumerConfig(props);
+            cc = Consumer.createJavaConsumerConnector(consumerConfig);
+            final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
+            final List<KafkaStream<byte[], byte[]>> streams = cc.createMessageStreamsByFilter(filter, numThreads);
+
             final ExecutorService executor = executorService(numThreads);
-            for (int i = 0; i < numThreads; i++) {
+
+            // this is being used during shutdown to first stop all submitted jobs before committing the offsets back to zookeeper
+            // and then shutting down the connection.
+            // this is to avoid yanking away the connection from the consumer runnables
+            stopLatch = new CountDownLatch(streams.size());
+
+            for (final KafkaStream<byte[], byte[]> stream : streams) {
                 executor.submit(new Runnable() {
                     @Override
                     public void run() {
-                        final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(props);
-                        Pattern pattern = Pattern.compile(Objects.requireNonNull(configuration.getString(CK_TOPIC_FILTER)));
-                        consumer.subscribe(pattern);
+                        final ConsumerIterator<byte[], byte[]> consumerIterator = stream.iterator();
+                        boolean retry;
+
                         do {
-                            if (paused) {
-                                // we try not to spin here, so we wait until the lifecycle goes back to running.
-                                LOG.debug(
-                                    "Message processing is paused, blocking until message processing is turned back on.");
-                                Uninterruptibles.awaitUninterruptibly(pausedLatch);
-                            }
+                            retry = false;
+
                             try {
-                                ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(Duration.ofMillis(1000));
-                                for (ConsumerRecord<byte[], byte[]> message : consumerRecords) {
+                                // we have to use hasNext() here instead foreach, because next() marks the message as processed immediately
+                                // noinspection WhileLoopReplaceableByForEach
+                                while (consumerIterator.hasNext()) {
                                     if (paused) {
                                         // we try not to spin here, so we wait until the lifecycle goes back to running.
                                         LOG.debug(
                                             "Message processing is paused, blocking until message processing is turned back on.");
                                         Uninterruptibles.awaitUninterruptibly(pausedLatch);
                                     }
-                                    final byte[] bytes = message.value();
+                                    // check for being stopped before actually getting the message, otherwise we could end up losing that message
+                                    if (stopped) {
+                                        break;
+                                    }
+                                    if (isThrottled()) {
+                                        blockUntilUnthrottled();
+                                    }
+
+                                    // process the message, this will immediately mark the message as having been processed. this gets tricky
+                                    // if we get an exception about processing it down below.
+                                    final MessageAndMetadata<byte[], byte[]> message = consumerIterator.next();
+
+                                    final byte[] bytes = message.message();
+
+                                    // it is possible that the message is null
                                     if (bytes == null) {
                                         continue;
                                     }
+
                                     totalBytesRead.addAndGet(bytes.length);
                                     lastSecBytesReadTmp.addAndGet(bytes.length);
 
@@ -324,16 +350,26 @@ public class KafkaTransport extends ThrottleableTransport {
                                     // TODO implement throttling
                                     input.processRawMessage(rawMessage);
                                 }
+                            } catch (ConsumerTimeoutException e) {
+                                // Happens when there is nothing to consume, retry to check again.
+                                retry = true;
                             } catch (Exception e) {
                                 LOG.error("Kafka consumer error, stopping consumer thread.", e);
                             }
-                        } while (!stopped);
-                        consumer.commitSync();
-                        consumer.close();
+                        } while (retry && !stopped);
+                        // explicitly commit our offsets when stopping.
+                        // this might trigger a couple of times, but it won't hurt
+                        cc.commitOffsets();
                         stopLatch.countDown();
                     }
                 });
             }
+            scheduler.scheduleAtFixedRate(new Runnable() {
+                @Override
+                public void run() {
+                    lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
+                }
+            }, 1, 1, TimeUnit.SECONDS);
         }
     }
 
@@ -372,6 +408,10 @@ public class KafkaTransport extends ThrottleableTransport {
         if (cc0_8_2_2 != null) {
             cc0_8_2_2.shutdown();
             cc0_8_2_2 = null;
+        }
+        if (cc != null) {
+            cc.shutdown();
+            cc = null;
         }
     }
 
@@ -412,7 +452,7 @@ public class KafkaTransport extends ThrottleableTransport {
             cr.addField(new TextField(
                 CK_VERSION,
                 "Kafak version",
-                "1.0.0",
+                "0.8.2",
                 "Kafka version",
                 ConfigurationField.Optional.OPTIONAL));
 
