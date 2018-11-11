@@ -195,9 +195,9 @@ public class KafkaTransport extends ThrottleableTransport {
         props.put("fetch.wait.max.ms", String.valueOf(configuration.getInt(CK_FETCH_WAIT_MAX)));
         props.put("zookeeper.connect", configuration.getString(CK_ZOOKEEPER));
         String bootstrapServers = configuration.getString(CK_BOOTSTRAP);
-        if (bootstrapServers != null && bootstrapServers.length() != 0) {
-            props.put("bootstrap.servers", bootstrapServers);
-        }
+//        if (bootstrapServers != null && bootstrapServers.length() != 0) {
+//            props.put("bootstrap.servers", bootstrapServers);
+//        }
         props.put("auto.offset.reset", configuration.getString(CK_OFFSET_RESET, DEFAULT_OFFSET_RESET));
         // Default auto commit interval is 60 seconds. Reduce to 1 second to minimize message duplication
         // if something breaks.
@@ -294,7 +294,7 @@ public class KafkaTransport extends ThrottleableTransport {
                     lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
                 }
             }, 1, 1, TimeUnit.SECONDS);
-        } else if (bootstrapServers == null || bootstrapServers.length() == 0) {
+        } else {
             final ConsumerConfig consumerConfig = new ConsumerConfig(props);
             cc = Consumer.createJavaConsumerConnector(consumerConfig);
             final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
