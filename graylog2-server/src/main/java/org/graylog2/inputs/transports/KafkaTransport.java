@@ -383,7 +383,15 @@ public class KafkaTransport extends ThrottleableTransport {
                 }
             }, 1, 1, TimeUnit.SECONDS);
         } else {
-            props.remove("auto.offset.reset");
+            String autoOffsetReset = props.getProperty("auto.offset.reset", DEFAULT_OFFSET_RESET);
+            if (autoOffsetReset.equals("largest")) {
+                autoOffsetReset = "latest";
+            } else if (autoOffsetReset.equals("smallest")) {
+                autoOffsetReset = "earliest";
+            } else {
+                autoOffsetReset = "latest";
+            }
+            props.setProperty("auto.offset.reset", autoOffsetReset);
             LOG.warn("bootstrap.servers={}",props.get("bootstrap.servers"));
             LOG.warn("kafka 0.11.0.2");
             stopLatch = new CountDownLatch(numThreads);
