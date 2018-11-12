@@ -36,6 +36,11 @@ import kafka0_9_0_1.consumer.TopicFilter;
 import kafka0_9_0_1.consumer.Whitelist;
 import kafka0_9_0_1.javaapi.consumer.ConsumerConnector;
 import kafka0_9_0_1.message.MessageAndMetadata;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
 import org.graylog2.plugin.LocalMetricRegistry;
 import org.graylog2.plugin.ServerStatus;
 import org.graylog2.plugin.configuration.Configuration;
@@ -58,9 +63,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Named;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import java.time.Duration;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,6 +72,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
 
 import static com.codahale.metrics.MetricRegistry.name;
 
@@ -189,6 +194,7 @@ public class KafkaTransport extends ThrottleableTransport {
         final Properties props = new Properties();
 
         props.put("group.id", GROUP_ID);
+        props.put("enable.auto.commit", "true");
         props.put("client.id", "gl2-" + nodeId + "-" + input.getId());
 
         props.put("fetch.min.bytes", String.valueOf(configuration.getInt(CK_FETCH_MIN_BYTES)));
@@ -215,6 +221,7 @@ public class KafkaTransport extends ThrottleableTransport {
         }
 
         if (kafkaVersion.startsWith("0.8")) {
+            LOG.warn("kafka 0.8.2.2");
             final kafka0_8_2_2.consumer.ConsumerConfig consumerConfig0_8_2_2 = new kafka0_8_2_2.consumer.ConsumerConfig(props);
             cc0_8_2_2 = kafka0_8_2_2.consumer.Consumer.createJavaConsumerConnector(consumerConfig0_8_2_2);
             final kafka0_8_2_2.consumer.TopicFilter filter = new kafka0_8_2_2.consumer.Whitelist(configuration.getString(CK_TOPIC_FILTER));
@@ -295,6 +302,7 @@ public class KafkaTransport extends ThrottleableTransport {
                 }
             }, 1, 1, TimeUnit.SECONDS);
         } else if (bootstrapServers == null || bootstrapServers.length() == 0) {
+            LOG.warn("kafka 0.9.0.1");
             final ConsumerConfig consumerConfig = new ConsumerConfig(props);
             cc = Consumer.createJavaConsumerConnector(consumerConfig);
             final TopicFilter filter = new Whitelist(configuration.getString(CK_TOPIC_FILTER));
@@ -374,6 +382,71 @@ public class KafkaTransport extends ThrottleableTransport {
                     lastSecBytesRead.set(lastSecBytesReadTmp.getAndSet(0));
                 }
             }, 1, 1, TimeUnit.SECONDS);
+        } else {
+            props.remove("auto.offset.reset");
+            LOG.warn("bootstrap.servers={}",props.get("bootstrap.servers"));
+            LOG.warn("kafka 0.11.0.2");
+            stopLatch = new CountDownLatch(numThreads);
+            final ExecutorService executor = executorService(numThreads);
+            for (int i = 0; i < numThreads; i++) {
+                executor.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(props);
+                        Pattern pattern = Pattern.compile(Objects.requireNonNull(configuration.getString(CK_TOPIC_FILTER)));
+                        consumer.subscribe(pattern, new ConsumerRebalanceListener() {
+                            @Override
+                            public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                                LOG.info("partitions revoked {}", partitions);
+                            }
+
+                            @Override
+                            public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                                LOG.info("partitions assigned {}", partitions);
+                            }
+                        });
+                        do {
+                            if (paused) {
+                                // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                LOG.debug(
+                                    "Message processing is paused, blocking until message processing is turned back on.");
+                                Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                            }
+                            try {
+                                ConsumerRecords<byte[], byte[]> consumerRecords = consumer.poll(1000);
+                                if (consumerRecords == null || consumerRecords.isEmpty()) {
+                                    continue;
+                                }
+                                for (ConsumerRecord<byte[], byte[]> message : consumerRecords) {
+                                    if (paused) {
+                                        // we try not to spin here, so we wait until the lifecycle goes back to running.
+                                        LOG.debug(
+                                            "Message processing is paused, blocking until message processing is turned back on.");
+                                        Uninterruptibles.awaitUninterruptibly(pausedLatch);
+                                    }
+                                    final byte[] bytes = message.value();
+                                    if (bytes == null) {
+                                        continue;
+                                    }
+                                    totalBytesRead.addAndGet(bytes.length);
+                                    lastSecBytesReadTmp.addAndGet(bytes.length);
+
+                                    final RawMessage rawMessage = new RawMessage(bytes);
+
+                                    // TODO implement throttling
+                                    input.processRawMessage(rawMessage);
+                                }
+                            } catch (Exception e) {
+                                LOG.error("Kafka consumer error, stopping consumer thread.", e);
+                            }
+                        } while (!stopped);
+                        LOG.warn("stop consumer");
+                        consumer.commitSync();
+                        consumer.close();
+                        stopLatch.countDown();
+                    }
+                });
+            }
         }
     }
 
