@@ -292,7 +292,7 @@
             <dependency>
                 <groupId>org.xusheng</groupId>
                 <artifactId>kafka-shade-0.8.2.2</artifactId>
-                <version>1.0.0-SNAPSHOT</version>
+                <version>1.0.0</version>
                 <exclusions>
                     <exclusion>
                         <groupId>com.sun.jmx</groupId>
@@ -319,7 +319,7 @@
             <dependency>
                 <groupId>org.xusheng</groupId>
                 <artifactId>kafka-shade-0.9.0.1</artifactId>
-                <version>1.0.0-SNAPSHOT</version>
+                <version>1.0.0</version>
                 <exclusions>
                     <exclusion>
                         <groupId>com.sun.jmx</groupId>
