@@ -263,6 +263,11 @@
                 <version>${scala.version}</version>
             </dependency>
             <dependency>
+                <groupId>org.scala-lang.modules</groupId>
+                <artifactId>scala-parser-combinators_2.11</artifactId>
+                <version>1.1.1</version>
+            </dependency>
+            <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka_2.11</artifactId>
                 <version>${kafka.version}</version>
@@ -292,7 +297,7 @@
             <dependency>
                 <groupId>org.xusheng</groupId>
                 <artifactId>kafka-shade-0.8.2.2</artifactId>
-                <version>1.0.0</version>
+                <version>1.0.1</version>
                 <exclusions>
                     <exclusion>
                         <groupId>com.sun.jmx</groupId>
@@ -319,7 +324,7 @@
             <dependency>
                 <groupId>org.xusheng</groupId>
                 <artifactId>kafka-shade-0.9.0.1</artifactId>
-                <version>1.0.0</version>
+                <version>1.0.1</version>
                 <exclusions>
                     <exclusion>
                         <groupId>com.sun.jmx</groupId>
