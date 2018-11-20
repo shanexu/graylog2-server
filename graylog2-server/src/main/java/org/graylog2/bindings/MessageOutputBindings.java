@@ -20,10 +20,7 @@ import com.google.common.base.Strings;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.MapBinder;
 import org.graylog2.Configuration;
-import org.graylog2.outputs.BlockingBatchedESOutput;
-import org.graylog2.outputs.DefaultMessageOutput;
-import org.graylog2.outputs.GelfOutput;
-import org.graylog2.outputs.LoggingOutput;
+import org.graylog2.outputs.*;
 import org.graylog2.plugin.inject.Graylog2Module;
 import org.graylog2.plugin.outputs.MessageOutput;
 import org.graylog2.shared.plugins.ChainingClassLoader;
@@ -52,6 +49,7 @@ public class MessageOutputBindings extends Graylog2Module {
 
         final MapBinder<String, MessageOutput.Factory<? extends MessageOutput>> outputMapBinder = outputsMapBinder();
         installOutput(outputMapBinder, GelfOutput.class, GelfOutput.Factory.class);
+        installOutput(outputMapBinder, KafkaOutput.class, KafkaOutput.Factory.class);
         installOutput(outputMapBinder, LoggingOutput.class, LoggingOutput.Factory.class);
     }
 
