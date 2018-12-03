@@ -73,12 +73,26 @@ public class RawMessage implements Serializable {
         this(payload, (ResolvableInetSocketAddress)null);
     }
 
+    public RawMessage(@Nonnull byte[] payload, @Nonnull byte[] payload2) {
+        this(Long.MIN_VALUE, new UUID(), Tools.nowUTC(), (ResolvableInetSocketAddress)null, payload, payload2);
+    }
+
     public RawMessage(@Nonnull byte[] payload, @Nullable InetSocketAddress remoteAddress) {
         this(Long.MIN_VALUE, new UUID(), Tools.nowUTC(), ResolvableInetSocketAddress.wrap(remoteAddress), payload);
     }
 
     public RawMessage(@Nonnull byte[] payload, @Nullable ResolvableInetSocketAddress remoteAddress) {
         this(Long.MIN_VALUE, new UUID(), Tools.nowUTC(), remoteAddress, payload);
+    }
+
+    public RawMessage(long journalOffset,
+                      @Nonnull UUID id,
+                      DateTime timestamp,
+                      @Nullable ResolvableInetSocketAddress remoteAddress,
+                      @Nonnull byte[] payload,
+                      @Nonnull byte[] payload2) {
+        this(journalOffset, id, timestamp, remoteAddress, payload);
+        msgBuilder.setPayload(ByteString.copyFrom(payload2));
     }
 
     public RawMessage(long journalOffset,
@@ -172,6 +186,10 @@ public class RawMessage implements Serializable {
 
     public byte[] getPayload() {
         return msgBuilder.getPayload().toByteArray(); // TODO PERFORMANCE array copy
+    }
+
+    public byte[] getPayload2() {
+        return msgBuilder.getPayload2().toByteArray();
     }
 
     public UUID getId() {

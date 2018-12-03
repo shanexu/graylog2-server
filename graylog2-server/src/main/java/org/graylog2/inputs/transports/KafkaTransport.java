@@ -20,6 +20,8 @@ import com.codahale.metrics.Gauge;
 import com.codahale.metrics.InstrumentedExecutorService;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.MetricSet;
+import com.eaio.uuid.UUID;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.eventbus.EventBus;
 import com.google.common.eventbus.Subscribe;
@@ -41,6 +43,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Header;
 import org.graylog2.plugin.LocalMetricRegistry;
 import org.graylog2.plugin.ServerStatus;
 import org.graylog2.plugin.configuration.Configuration;
@@ -59,6 +62,7 @@ import org.graylog2.plugin.inputs.transports.Transport;
 import org.graylog2.plugin.journal.RawMessage;
 import org.graylog2.plugin.lifecycles.Lifecycle;
 import org.graylog2.plugin.system.NodeId;
+import org.joda.time.DateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -383,6 +387,7 @@ public class KafkaTransport extends ThrottleableTransport {
                 }
             }, 1, 1, TimeUnit.SECONDS);
         } else {
+            ObjectMapper objectMapper = new ObjectMapper();
             String autoOffsetReset = props.getProperty("auto.offset.reset", DEFAULT_OFFSET_RESET);
             if (autoOffsetReset.equals("largest")) {
                 autoOffsetReset = "latest";
@@ -439,8 +444,18 @@ public class KafkaTransport extends ThrottleableTransport {
                                     totalBytesRead.addAndGet(bytes.length);
                                     lastSecBytesReadTmp.addAndGet(bytes.length);
 
-                                    final RawMessage rawMessage = new RawMessage(bytes);
-
+                                    long timestamp = message.timestamp();
+                                    Header[] headers = message.headers().toArray();
+                                    KafkaHeader[] kafkaHeaders = new KafkaHeader[headers.length];
+                                    for (int i = 0; i < headers.length; i++) {
+                                        KafkaHeader kh = new KafkaHeader();
+                                        Header h = headers[i];
+                                        kh.setKey(h.key());
+                                        kh.setValue(h.value());
+                                        kafkaHeaders[i] = kh;
+                                    }
+                                    byte[] payload2 = objectMapper.writeValueAsBytes(kafkaHeaders);
+                                    final RawMessage rawMessage = new RawMessage(Long.MIN_VALUE, new UUID(), new DateTime(timestamp), null, bytes, payload2);
                                     // TODO implement throttling
                                     input.processRawMessage(rawMessage);
                                 }
