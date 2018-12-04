@@ -92,7 +92,7 @@ public class RawMessage implements Serializable {
                       @Nonnull byte[] payload,
                       @Nonnull byte[] payload2) {
         this(journalOffset, id, timestamp, remoteAddress, payload);
-        msgBuilder.setPayload(ByteString.copyFrom(payload2));
+        msgBuilder.setPayload2(ByteString.copyFrom(payload2));
     }
 
     public RawMessage(long journalOffset,

@@ -8,6 +8,7 @@ import org.graylog2.inputs.transports.KafkaHeader;
 import org.graylog2.plugin.Message;
 import org.graylog2.plugin.configuration.Configuration;
 import org.graylog2.plugin.inputs.annotations.Codec;
+import org.graylog2.plugin.inputs.annotations.ConfigClass;
 import org.graylog2.plugin.inputs.annotations.FactoryClass;
 import org.graylog2.plugin.inputs.codecs.AbstractCodec;
 import org.graylog2.plugin.inputs.codecs.CodecAggregator;
@@ -18,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
@@ -45,6 +47,11 @@ public class HomerPureCodec extends AbstractCodec {
                     String key = kh.key();
                     byte[] value = kh.value();
                     switch (key) {
+                        case "source":
+                            String path = new String(value, StandardCharsets.UTF_8);
+                            message.addField("file", new File(path).getName());
+                            message.addField("path", path);
+                            break;
                         case "inode":
                             message.addField("inode", Longs.fromByteArray(value));
                             break;
@@ -97,6 +104,11 @@ public class HomerPureCodec extends AbstractCodec {
 
         @Override
         Descriptor getDescriptor();
+    }
+
+    @ConfigClass
+    public static class Config extends AbstractCodec.Config {
+
     }
 
     public static class Descriptor extends AbstractCodec.Descriptor {
