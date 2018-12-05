@@ -63,6 +63,7 @@ import org.graylog2.plugin.journal.RawMessage;
 import org.graylog2.plugin.lifecycles.Lifecycle;
 import org.graylog2.plugin.system.NodeId;
 import org.joda.time.DateTime;
+import org.joda.time.DateTimeZone;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -455,7 +456,7 @@ public class KafkaTransport extends ThrottleableTransport {
                                         kafkaHeaders[i] = kh;
                                     }
                                     byte[] payload2 = objectMapper.writeValueAsBytes(kafkaHeaders);
-                                    final RawMessage rawMessage = new RawMessage(Long.MIN_VALUE, new UUID(), new DateTime(timestamp), null, bytes, payload2);
+                                    final RawMessage rawMessage = new RawMessage(Long.MIN_VALUE, new UUID(), new DateTime(timestamp, DateTimeZone.UTC), null, bytes, payload2);
                                     // TODO implement throttling
                                     input.processRawMessage(rawMessage);
                                 }
