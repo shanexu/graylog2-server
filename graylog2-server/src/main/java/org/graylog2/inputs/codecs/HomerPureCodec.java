@@ -79,6 +79,11 @@ public class HomerPureCodec extends AbstractCodec {
                         case "cluster":
                             message.addField("cluster", new String(value, StandardCharsets.UTF_8));
                             break;
+                        case "dc":
+                            message.addField("dc", new String(value, StandardCharsets.UTF_8));
+                            break;
+                        default:
+                            // do nothing;
                     }
                 }
             } catch (IOException e) {
