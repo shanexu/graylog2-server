@@ -82,6 +82,8 @@ public class HomerPureCodec extends AbstractCodec {
                         case "dc":
                             message.addField("dc", new String(value, StandardCharsets.UTF_8));
                             break;
+                        case "pod_name":
+                            message.addField("pod_name", new String(value, StandardCharsets.UTF_8));
                         default:
                             // do nothing;
                     }
